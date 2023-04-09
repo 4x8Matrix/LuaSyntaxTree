@@ -1,0 +1,19 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Lua: Test & Build project",
+			"detail": "Test the Lua project",
+			"type": "shell",
+			"command": "lua",
+			"args": [ "Main.lua" ],
+			"group": { "kind": "build" },
+			"options": { "cwd": "${workspaceFolder}", "env": { "lua": "lua" } },
+			"presentation": {
+				"reveal": "always",
+				"panel": "new",
+				"focus": true
+			}
+		}
+	]
+}
