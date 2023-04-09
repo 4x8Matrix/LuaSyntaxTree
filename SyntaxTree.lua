@@ -40,12 +40,28 @@ SyntaxTree.Settings.Verbose = true
 -----------------------------------------------------------------------------------------
 -----------------------------------------------------------------------------------------
 
+function SyntaxTree.Node:SetParent(parentNode)
+    if self._parent then
+        local index = table.find(self._parent, self)
+
+        if index then
+            table.remove(self._parent, index)
+        end
+    end
+
+    self._parent = parentNode
+
+    if parentNode then
+        table.insert(parentNode._children, parentNode)
+    end
+end
+
 function SyntaxTree.Node.new(nodeType, nodeParent)
-    local nodeObject = {
+    local nodeObject = setmetatable({
         type = nodeType,
         _parent = nodeParent,
         _children = { }
-    }
+    }, { __index = SyntaxTree.Node })
 
     if nodeParent then
         table.insert(nodeParent._children, nodeObject)
@@ -57,7 +73,31 @@ end
 -----------------------------------------------------------------------------------------
 -----------------------------------------------------------------------------------------
 
+function SyntaxTree.Parser:parseVariableList(lexer)
+    local tableNode = SyntaxTree.Node.new("VariableList")
+    local variableList = { }
+
+    while true do
+        if lexer:peek() ~= "IdentifierMatch" then
+            break
+        end
+
+        table.insert(variableList, select(2, lexer:next()))
+
+        if select(2, lexer:peek()) == "," then
+            lexer:next()
+        else
+            break
+        end
+    end
+
+    tableNode.list = variableList
+
+    return variableList
+end
+
 function SyntaxTree.Parser:parseExpressionList(lexer)
+    local tableNode = SyntaxTree.Node.new("ExpressionList")
     local expressionList = { }
 
     while true do
@@ -70,12 +110,15 @@ function SyntaxTree.Parser:parseExpressionList(lexer)
         end
     end
 
+    tableNode.list = expressionList
+
     return expressionList
 end
 
 function SyntaxTree.Parser:parseTableConstructor(lexer)
     assert(select(2, lexer:next()) == "{", "Expected '{' when accessing table constructor")
 
+    local tableNode = SyntaxTree.Node.new("TableConstructor")
     local tableContainments = { }
 
     while true do
@@ -111,9 +154,11 @@ function SyntaxTree.Parser:parseTableConstructor(lexer)
         end
     end
 
+    tableNode.data = tableContainments
+
     assert(select(2, lexer:next()) == "}", "Expected '}' when closing table constructor")
 
-    return tableContainments
+    return tableNode
 end
 
 function SyntaxTree.Parser:parseExpression(lexer)
@@ -139,9 +184,9 @@ function SyntaxTree.Parser:parseExpression(lexer)
         expressionNode.expressionType = "Varadic"
         expressionNode.value = lexemeSource
     elseif lexemeType == "IdentifierMatch" then
-        lexemeType, lexemeSource = lexer:peek()
+        local nextLexemeType, nextLexemeSource = lexer:peek()
 
-        if lexemeType == "StringMatch" or lexemeSource == "(" or lexemeSource == "{" then
+        if nextLexemeType == "StringMatch" or nextLexemeSource == "(" or nextLexemeSource == "{" then
             expressionNode.expressionType = "AnonymousFunction"
             expressionNode.value = self:parseFunctionCall(lexer, lexemeSource)
         else
@@ -152,7 +197,11 @@ function SyntaxTree.Parser:parseExpression(lexer)
         if lexemeSource == "function" then
             assert(select(2, lexer:next()) == "(", "Expected '(' when opening function")
 
-            local argumentsList = self:parseExpressionList(lexer)
+            local argumentsList = { }
+
+            if select(2, lexer:peek()) ~= ")" then
+                argumentsList = self:parseExpressionList(lexer)
+            end
 
             assert(select(2, lexer:next()) == ")", "Expected ')' when closing function")
 
@@ -164,9 +213,9 @@ function SyntaxTree.Parser:parseExpression(lexer)
         elseif (lexemeSource == "nil" and lexemeSource) or (lexemeSource == "true" and lexemeSource) or (lexemeSource == "false" and lexemeSource) then
             expressionNode.expressionType = "Keyword"
             expressionNode.value = lexemeSource
+        else
+            error("unexpected keyword when parsing expression: " .. lexemeSource)
         end
-
-        error("unexpected keyword when parsing expression")
     end
 
     return expressionNode
@@ -193,6 +242,26 @@ function SyntaxTree.Parser:parseFunctionCall(lexer, identifier)
     functionCallNode.args = functionArgs
 
     return functionCallNode
+end
+
+function SyntaxTree.Parser:parseFunction(lexer)
+    local functionNode = SyntaxTree.Node.new("Block", lexer.nodes[lexer.scope - 1])
+    local lexemeType, lexemeSource = lexer:next()
+
+    assert(lexemeType == "IdentifierMatch", "Missing function name identifier")
+    assert(select(2, lexer:next()) == "(", "Expected '(' when opening function")
+
+    local argumentsList = self:parseExpressionList(lexer)
+
+    assert(select(2, lexer:next()) == ")", "Expected ')' bracket to close function call")
+
+    local blockNode = self:parseBlock(lexer)
+
+    functionNode.block = blockNode
+    functionNode.name = lexemeSource
+    functionNode.arguments = argumentsList
+
+    return functionNode
 end
 
 function SyntaxTree.Parser:parseStatement(lexer)
@@ -223,6 +292,29 @@ function SyntaxTree.Parser:parseBlock(lexer)
 
             if nextLexemeType == "StringMatch" or nextLexemeSource == "(" or nextLexemeSource == "{" then
                 self:parseFunctionCall(lexer, lexemeSource)
+            end
+        elseif lexemeType == "Keyword" then
+            local nextLexemeType, nextLexemeSource = lexer:peek()
+
+            if nextLexemeType == "IdentifierMatch" then
+                local localNode = SyntaxTree.Node.new("LocalDefinition", blockNode)
+                local variableList, expressionList = self:parseVariableList(lexer), { }
+                local _, nextLexemeSource = lexer:peek()
+
+                if nextLexemeSource == "=" then
+                    lexer:skip()
+
+                    expressionList = self:parseExpressionList(lexer)
+                end
+
+                localNode.expressionList = expressionList
+                localNode.variableList = variableList
+            elseif nextLexemeType == "Keyword" then
+                assert(nextLexemeSource == "function", "Unexpected keyword at sourced block")
+
+                lexer:skip()
+
+                self:parseFunction(lexer):SetParent(blockNode)
             end
         end
 
