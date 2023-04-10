@@ -40,7 +40,9 @@ function print_table(tbl, tracked, index)
 end
 
 print_table(SyntaxTree.new([[
-local a, b, c = true, false, function(c, d, e, f, g)
-    return 123
-end
+    local function abc()
+        print'Hello, World!'
+    end
+
+    local a = 1
 ]]))

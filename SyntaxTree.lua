@@ -1,4 +1,19 @@
+--[[
+    Lua Syntax Tree
+]]--
+
 local SyntaxTree = { }
+
+-----------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------
+
+function table.find(t, target)
+    for index, value in next, t do
+        if value == target then
+            return index
+        end
+    end
+end
 
 -----------------------------------------------------------------------------------------
 -----------------------------------------------------------------------------------------
@@ -13,8 +28,7 @@ SyntaxTree.Settings = {}
 SyntaxTree.Lexer.EOS = "EndOfSource"
 SyntaxTree.Lexer.Lexemes = {
     ["Keyword"] = { "^and", "^break", "^do", "^else", "^elseif", "^end", "^for", "^function", "^if", "^in", "^local", "^nil", "^not", "^while", "^repeat", "^return", "^then", "^self", "^until", "^or", "^false", "^true" },
-    ["BinaryOperator"] = { '^+', '^-', '^*', '^/', '^%%', '^<', "^<=", '^>', "^>=", "^==", "^~=", "^%.%." },
-    ["UnaryOperator"] = { '^-', '^not', '^#' },
+    ["Operator"] = { '^+', '^-', '^*', '^/', '^%%', '^<', "^<=", '^>', "^>=", "^==", "^~=", "^%.%.", '^#' },
     ["StringMatch"] = { "^(['\"])%1", [[^(['"])(\*)%2%1]], [[^(['"]).-[^\](\*)%2%1]], "^(['\"]).-.*", "^%[(=*)%[.-%]%1%]", "^%[%[.-.*" },
     ["NumberMatch"] = { "^0x[%da-fA-F]+", "^%d+%.?%d*[eE][%+%-]?%d+", "^%d+%.?%d*" },
     ["IdentifierMatch"] = { "^[%a_][%w_]*" },
@@ -25,8 +39,7 @@ SyntaxTree.Lexer.Lexemes = {
 
 SyntaxTree.Lexer.Priority = {
     "Keyword",
-    "BinaryOperator",
-    "UnaryOperator",
+    "Operator",
     "StringMatch",
     "NumberMatch",
     "IdentifierMatch",
@@ -42,17 +55,21 @@ SyntaxTree.Settings.Verbose = true
 
 function SyntaxTree.Node:SetParent(parentNode)
     if self._parent then
-        local index = table.find(self._parent, self)
+        local index = table.find(self._parent._children, self)
 
         if index then
-            table.remove(self._parent, index)
+            table.remove(self._parent._children, index)
         end
     end
 
     self._parent = parentNode
 
+    if SyntaxTree.Settings.Verbose then
+        print("SyntaxTree.Node:SetParent() => Parenting node of " .. self.type .. " to: " .. tostring(parentNode and parentNode.type or nil))
+    end
+
     if parentNode then
-        table.insert(parentNode._children, parentNode)
+        table.insert(parentNode._children, self)
     end
 end
 
@@ -65,6 +82,10 @@ function SyntaxTree.Node.new(nodeType, nodeParent)
 
     if nodeParent then
         table.insert(nodeParent._children, nodeObject)
+    end
+
+    if SyntaxTree.Settings.Verbose then
+        print("SyntaxTree.Node.new() => Instantiating node of " .. nodeType .. " - Parented to: " .. tostring(nodeParent))
     end
 
     return nodeObject
@@ -224,14 +245,17 @@ end
 function SyntaxTree.Parser:parseFunctionCall(lexer, identifier)
     local lexemeType, lexemeSource = lexer:peek()
 
-    local functionCallNode = SyntaxTree.Node.new("FunctionCall", lexer.nodes[lexer.scope])
+    local functionCallNode = SyntaxTree.Node.new("FunctionCall")
     local functionArgs = { }
 
     if lexemeType == "StringMatch" then
         functionArgs = { self:parseExpression(lexer) }
     elseif lexemeSource == "(" then
         lexer:skip()
-        functionArgs = self:parseExpressionList(lexer)
+
+        if select(2, lexer:peek()) ~= ")" then
+            functionArgs = self:parseExpressionList(lexer)
+        end
 
         assert(select(2, lexer:next()) == ")", "Expected ')' bracket to close function call")
     else
@@ -245,13 +269,17 @@ function SyntaxTree.Parser:parseFunctionCall(lexer, identifier)
 end
 
 function SyntaxTree.Parser:parseFunction(lexer)
-    local functionNode = SyntaxTree.Node.new("Block", lexer.nodes[lexer.scope - 1])
+    local functionNode = SyntaxTree.Node.new("FunctionBlock")
     local lexemeType, lexemeSource = lexer:next()
 
     assert(lexemeType == "IdentifierMatch", "Missing function name identifier")
     assert(select(2, lexer:next()) == "(", "Expected '(' when opening function")
 
-    local argumentsList = self:parseExpressionList(lexer)
+    local argumentsList = { }
+
+    if select(2, lexer:peek()) ~= ")" then
+        argumentsList = self:parseExpressionList(lexer)
+    end
 
     assert(select(2, lexer:next()) == ")", "Expected ')' bracket to close function call")
 
@@ -265,12 +293,45 @@ function SyntaxTree.Parser:parseFunction(lexer)
 end
 
 function SyntaxTree.Parser:parseStatement(lexer)
-    
+    local lexemeType, lexemeSource = lexer:next()
+
+    if lexemeType == "IdentifierMatch" then
+        local nextLexemeType, nextLexemeSource = lexer:peek()
+
+        if nextLexemeType == "StringMatch" or nextLexemeSource == "(" or nextLexemeSource == "{" then
+            return self:parseFunctionCall(lexer, lexemeSource)
+        end
+    elseif lexemeType == "Keyword" then
+        local nextLexemeType, nextLexemeSource = lexer:peek()
+
+        if nextLexemeType == "IdentifierMatch" then
+            local localNode = SyntaxTree.Node.new("LocalDefinition")
+            local variableList, expressionList = self:parseVariableList(lexer), { }
+            local _, nextLexemeSource = lexer:peek()
+
+            if nextLexemeSource == "=" then
+                lexer:skip()
+
+                expressionList = self:parseExpressionList(lexer)
+            end
+
+            localNode.expressionList = expressionList
+            localNode.variableList = variableList
+
+            return localNode
+        elseif nextLexemeType == "Keyword" then
+            assert(nextLexemeSource == "function", "Unexpected keyword at sourced block")
+
+            lexer:skip()
+
+            return self:parseFunction(lexer)
+        end
+    end
 end
 
 function SyntaxTree.Parser:parseBlock(lexer)
     if SyntaxTree.Settings.Verbose then
-        print(string.format("SyntaxTree.Parser:parseBlock() => Entering a new Lua Block at %d scope", lexer.scope))
+        print(string.format("SyntaxTree.Parser:parseBlock() => Entering a new Lua Block at %d scope", lexer.scope + 1))
     end
 
     local blockNode = SyntaxTree.Node.new("Block", lexer.nodes[lexer.scope - 1])
@@ -291,13 +352,13 @@ function SyntaxTree.Parser:parseBlock(lexer)
             local nextLexemeType, nextLexemeSource = lexer:peek()
 
             if nextLexemeType == "StringMatch" or nextLexemeSource == "(" or nextLexemeSource == "{" then
-                self:parseFunctionCall(lexer, lexemeSource)
+                self:parseFunctionCall(lexer, lexemeSource):SetParent(blockNode)
             end
         elseif lexemeType == "Keyword" then
             local nextLexemeType, nextLexemeSource = lexer:peek()
 
             if nextLexemeType == "IdentifierMatch" then
-                local localNode = SyntaxTree.Node.new("LocalDefinition", blockNode)
+                local localNode = SyntaxTree.Node.new("LocalDefinition")
                 local variableList, expressionList = self:parseVariableList(lexer), { }
                 local _, nextLexemeSource = lexer:peek()
 
@@ -309,6 +370,8 @@ function SyntaxTree.Parser:parseBlock(lexer)
 
                 localNode.expressionList = expressionList
                 localNode.variableList = variableList
+
+                localNode:SetParent(blockNode)
             elseif nextLexemeType == "Keyword" then
                 assert(nextLexemeSource == "function", "Unexpected keyword at sourced block")
 
@@ -322,8 +385,8 @@ function SyntaxTree.Parser:parseBlock(lexer)
     end
 
     if SyntaxTree.Settings.Verbose then
-        print(string.format("SyntaxTree.Parser:parseBlock() => Main Source, %s, %d", lexer:active(), lexer.scope))
-        print(string.format("SyntaxTree.Parser:parseBlock() => Exiting a new Lua Block at %d scope", lexer.scope))
+        print(string.format("SyntaxTree.Parser:parseBlock() => Main Source, %s, %s, %d", lexemeType, lexemeSource, lexer.scope))
+        print(string.format("SyntaxTree.Parser:parseBlock() => Exiting a Lua Block at %d scope", lexer.scope))
     end
 
     lexer.nodes[lexer.scope] = nil
@@ -422,7 +485,7 @@ function SyntaxTree.Lexer:next()
             if matchStartIndex and matchEndIndex then
                 self.index = matchEndIndex + 1
 
-                if lexemeType == "SpaceMatch" then
+                if lexemeType == "SpaceMatch" or lexemeType == "CommentMatch" then
                     return self:next()
                 end
 
